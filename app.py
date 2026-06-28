@@ -4,8 +4,6 @@ import numpy as np
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 import io
-import tempfile
-import os
 
 # Page configuration
 st.set_page_config(
@@ -66,26 +64,21 @@ if uploaded_file is not None:
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         h, w, _ = image.shape
 
-    # Save image to a temporary file (required for st_canvas to work reliably)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_file:
-        temp_path = tmp_file.name
-        pil_image = Image.fromarray(image_rgb)
-        pil_image.save(temp_path, format="PNG")
+    # Convert to PIL Image (RGB) – this is what st_canvas expects
+    pil_image = Image.fromarray(image_rgb).convert('RGB')
 
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("✏️ Mark Damage")
         st.markdown("Use the brush to paint over damaged areas.")
-        # Pass the file path, and explicitly provide height and width
+        # Pass the PIL image, no height/width needed – they are taken from the image
         canvas_result = st_canvas(
             fill_color="rgba(255, 255, 255, 1)",
             stroke_width=brush_size,
             stroke_color="rgba(255, 255, 255, 1)",
-            background_image=temp_path,
+            background_image=pil_image,
             update_streamlit=True,
-            height=h,
-            width=w,
             drawing_mode="freedraw",
             key="canvas",
         )
@@ -118,12 +111,6 @@ if uploaded_file is not None:
                 )
         else:
             st.warning("Please draw on the image to mark damaged areas.")
-
-    # Clean up temp file
-    try:
-        os.unlink(temp_path)
-    except:
-        pass
 else:
     st.info("👈 Upload an image to get started.")
 
