@@ -29,6 +29,12 @@ st.markdown("""
 st.title("🪪 ID Card Repair Tool")
 st.markdown("Upload a damaged ID card, mark the broken areas, and we'll repair it automatically.")
 
+# Initialize session state variables to avoid "SessionInfo" errors
+if "canvas_initialized" not in st.session_state:
+    st.session_state.canvas_initialized = False
+if "repair_done" not in st.session_state:
+    st.session_state.repair_done = False
+
 # Sidebar
 with st.sidebar:
     st.header("📋 Instructions")
@@ -48,78 +54,93 @@ with st.sidebar:
 
 # Main area
 if uploaded_file is not None:
-    # Read image
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    h, w, _ = image.shape
-
-    # Resize to a fixed display width (600px) to avoid cut-off
-    MAX_DISPLAY_WIDTH = 600
-    if w > MAX_DISPLAY_WIDTH:
-        scale = MAX_DISPLAY_WIDTH / w
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        image = cv2.resize(image, (new_w, new_h))
+    try:
+        # Read image
+        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        if image is None:
+            st.error("Could not decode the image. Please upload a valid JPG or PNG file.")
+            st.stop()
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         h, w, _ = image.shape
 
-    # Convert to PIL Image (RGB) – this is what st_canvas expects
-    pil_image = Image.fromarray(image_rgb).convert('RGB')
+        # Resize to a fixed display width (600px) to avoid cut-off
+        MAX_DISPLAY_WIDTH = 600
+        if w > MAX_DISPLAY_WIDTH:
+            scale = MAX_DISPLAY_WIDTH / w
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            image = cv2.resize(image, (new_w, new_h))
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            h, w, _ = image.shape
 
-    col1, col2 = st.columns(2)
+        # Convert to PIL Image
+        pil_image = Image.fromarray(image_rgb).convert('RGB')
 
-    with col1:
-        st.subheader("✏️ Mark Damage")
-        st.markdown("Use the brush to paint over damaged areas.")
-        # Pass the PIL image and explicitly set canvas size to match
-        canvas_result = st_canvas(
-            fill_color="rgba(255, 255, 255, 1)",
-            stroke_width=brush_size,
-            stroke_color="rgba(255, 255, 255, 1)",
-            background_image=pil_image,
-            width=w,          # match resized image width
-            height=h,         # match resized image height
-            update_streamlit=True,
-            drawing_mode="freedraw",
-            key="canvas",
-        )
+        col1, col2 = st.columns(2)
 
-    if st.button("🛠️ Repair", type="primary"):
-        if canvas_result is not None and canvas_result.image_data is not None:
-            # Extract mask from alpha channel
-            mask_data = canvas_result.image_data[:, :, 3].astype(np.uint8)
-            mask = (mask_data > 0).astype(np.uint8) * 255
+        with col1:
+            st.subheader("✏️ Mark Damage")
+            st.markdown("Use the brush to paint over damaged areas.")
+            
+            # Try to render the canvas; catch any session state errors
+            try:
+                canvas_result = st_canvas(
+                    fill_color="rgba(255, 255, 255, 1)",
+                    stroke_width=brush_size,
+                    stroke_color="rgba(255, 255, 255, 1)",
+                    background_image=pil_image,
+                    width=w,
+                    height=h,
+                    update_streamlit=True,
+                    drawing_mode="freedraw",
+                    key="canvas",
+                )
+                st.session_state.canvas_initialized = True
+            except Exception as e:
+                st.error(f"Canvas initialization error: {e}. Please try reloading the page.")
+                st.session_state.canvas_initialized = False
+                canvas_result = None
 
-            # Check if any damage was marked
-            if np.sum(mask) == 0:
-                st.warning("Please draw on the image to mark damaged areas.")
+        if st.button("🛠️ Repair", type="primary"):
+            if not st.session_state.canvas_initialized or canvas_result is None:
+                st.warning("Please wait for the canvas to load, then draw on the image.")
+            elif canvas_result.image_data is None:
+                st.warning("No drawing data found. Please draw on the image first.")
             else:
-                try:
-                    # Choose inpainting method
-                    inpaint_method = cv2.INPAINT_TELEA if repair_mode == "Telea" else cv2.INPAINT_NS
-                    repaired = cv2.inpaint(image, mask, 3, inpaint_method)
-                    repaired_rgb = cv2.cvtColor(repaired, cv2.COLOR_BGR2RGB)
+                # Extract mask from alpha channel
+                mask_data = canvas_result.image_data[:, :, 3].astype(np.uint8)
+                mask = (mask_data > 0).astype(np.uint8) * 255
 
-                    with col2:
-                        st.subheader("✅ Repaired Card")
-                        st.image(repaired_rgb, use_container_width=True)
+                if np.sum(mask) == 0:
+                    st.warning("You haven't marked any damaged areas. Draw with the brush first.")
+                else:
+                    try:
+                        inpaint_method = cv2.INPAINT_TELEA if repair_mode == "Telea" else cv2.INPAINT_NS
+                        repaired = cv2.inpaint(image, mask, 3, inpaint_method)
+                        repaired_rgb = cv2.cvtColor(repaired, cv2.COLOR_BGR2RGB)
 
-                        # Download
-                        repaired_pil = Image.fromarray(repaired_rgb)
-                        buf = io.BytesIO()
-                        repaired_pil.save(buf, format="PNG")
-                        byte_im = buf.getvalue()
-                        st.download_button(
-                            label="📥 Download Repaired Image",
-                            data=byte_im,
-                            file_name="repaired_id_card.png",
-                            mime="image/png",
-                        )
-                except Exception as e:
-                    st.error(f"Repair failed: {e}. Please try again or adjust the mask.")
-        else:
-            st.warning("Please draw on the image to mark damaged areas.")
+                        with col2:
+                            st.subheader("✅ Repaired Card")
+                            st.image(repaired_rgb, use_container_width=True)
+
+                            # Download
+                            repaired_pil = Image.fromarray(repaired_rgb)
+                            buf = io.BytesIO()
+                            repaired_pil.save(buf, format="PNG")
+                            byte_im = buf.getvalue()
+                            st.download_button(
+                                label="📥 Download Repaired Image",
+                                data=byte_im,
+                                file_name="repaired_id_card.png",
+                                mime="image/png",
+                            )
+                            st.session_state.repair_done = True
+                    except Exception as e:
+                        st.error(f"Repair failed: {e}. Please try again or adjust the mask.")
+
+    except Exception as e:
+        st.error(f"An unexpected error occurred: {e}. Please try again with a different image.")
 else:
     st.info("👈 Upload an image to get started.")
 
