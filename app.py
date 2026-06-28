@@ -71,29 +71,40 @@ if uploaded_file is not None:
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     h, w, _ = image.shape
 
+    # Resize if too large (to avoid performance issues)
+    max_size = 800
+    if max(h, w) > max_size:
+        scale = max_size / max(h, w)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        image = cv2.resize(image, (new_w, new_h))
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        h, w, _ = image.shape
+
+    # Convert to PIL for the canvas
+    pil_image = Image.fromarray(image_rgb)
+
     # Create two columns
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("✏️ Mark Damage")
         st.markdown("Use the brush to paint over damaged areas.")
-        # Create a canvas for drawing the mask
+        # Create a canvas – height and width are derived from the image
         canvas_result = st_canvas(
-            fill_color="rgba(255, 255, 255, 1)",  # White mask
+            fill_color="rgba(255, 255, 255, 1)",   # White mask
             stroke_width=brush_size,
             stroke_color="rgba(255, 255, 255, 1)",
-            background_image=Image.fromarray(image_rgb),
+            background_image=pil_image,
             update_streamlit=True,
-            height=h,
-            width=w,
             drawing_mode="freedraw",
             key="canvas",
         )
 
     # Repair button
     if st.button("🛠️ Repair", type="primary"):
-        if canvas_result.image_data is not None:
-            # Extract the mask from the canvas (alpha channel)
+        if canvas_result is not None and canvas_result.image_data is not None:
+            # Extract the mask from the alpha channel
             mask_data = canvas_result.image_data[:, :, 3].astype(np.uint8)
             mask = (mask_data > 0).astype(np.uint8) * 255
 
