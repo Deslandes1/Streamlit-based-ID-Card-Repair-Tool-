@@ -115,6 +115,11 @@ if uploaded_file is not None:
                 mask_data = canvas_result.image_data[:, :, 3].astype(np.uint8)
                 mask = (mask_data > 0).astype(np.uint8) * 255
 
+                # *** CRITICAL FIX: Ensure mask matches image dimensions ***
+                if mask.shape[:2] != (h, w):
+                    # Resize mask to match the image
+                    mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+
                 if np.sum(mask) == 0:
                     st.warning("You haven't marked any area. Draw with the brush first.")
                 else:
@@ -126,7 +131,7 @@ if uploaded_file is not None:
                                 inpaint_method = cv2.INPAINT_TELEA  # Telea is default
                                 repaired = cv2.inpaint(image, mask, 3, inpaint_method)
                                 repaired_rgb = cv2.cvtColor(repaired, cv2.COLOR_BGR2RGB)
-                                st.image(repaired_rgb, use_column_width=True)  # fixed parameter
+                                st.image(repaired_rgb, use_column_width=True)
                                 # Download
                                 repaired_pil = Image.fromarray(repaired_rgb)
                                 buf = io.BytesIO()
@@ -169,10 +174,9 @@ if uploaded_file is not None:
                                                 rep_resized = cv2.resize(rep_img, (w_box, h_box))
                                                 # Overlay on original image
                                                 result_img = image.copy()
-                                                # Paste the replacement into the box area
                                                 result_img[y:y+h_box, x:x+w_box] = rep_resized
                                                 result_rgb = cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB)
-                                                st.image(result_rgb, use_column_width=True)  # fixed parameter
+                                                st.image(result_rgb, use_column_width=True)
                                                 # Download
                                                 result_pil = Image.fromarray(result_rgb)
                                                 buf = io.BytesIO()
