@@ -126,7 +126,7 @@ if uploaded_file is not None:
                                 inpaint_method = cv2.INPAINT_TELEA  # Telea is default
                                 repaired = cv2.inpaint(image, mask, 3, inpaint_method)
                                 repaired_rgb = cv2.cvtColor(repaired, cv2.COLOR_BGR2RGB)
-                                st.image(repaired_rgb, use_container_width=True)
+                                st.image(repaired_rgb, use_column_width=True)  # fixed parameter
                                 # Download
                                 repaired_pil = Image.fromarray(repaired_rgb)
                                 buf = io.BytesIO()
@@ -172,7 +172,7 @@ if uploaded_file is not None:
                                                 # Paste the replacement into the box area
                                                 result_img[y:y+h_box, x:x+w_box] = rep_resized
                                                 result_rgb = cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB)
-                                                st.image(result_rgb, use_container_width=True)
+                                                st.image(result_rgb, use_column_width=True)  # fixed parameter
                                                 # Download
                                                 result_pil = Image.fromarray(result_rgb)
                                                 buf = io.BytesIO()
