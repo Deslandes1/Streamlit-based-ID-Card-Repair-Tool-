@@ -13,7 +13,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Light blue theme via CSS
+# Light blue theme
 st.markdown("""
 <style>
     .stApp {
@@ -81,22 +81,21 @@ if uploaded_file is not None:
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         h, w, _ = image.shape
 
-    # Convert to PIL for the canvas
-    pil_image = Image.fromarray(image_rgb)
-
     # Create two columns
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("✏️ Mark Damage")
         st.markdown("Use the brush to paint over damaged areas.")
-        # Create a canvas – height and width are derived from the image
+        # Canvas: use numpy array as background, pass width & height explicitly
         canvas_result = st_canvas(
             fill_color="rgba(255, 255, 255, 1)",   # White mask
             stroke_width=brush_size,
             stroke_color="rgba(255, 255, 255, 1)",
-            background_image=pil_image,
+            background_image=image_rgb,            # numpy array
             update_streamlit=True,
+            height=h,
+            width=w,
             drawing_mode="freedraw",
             key="canvas",
         )
