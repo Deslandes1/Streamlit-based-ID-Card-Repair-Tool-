@@ -253,7 +253,7 @@ if st.session_state.image is not None and st.session_state.pil_image is not None
                     try:
                         repaired = cv2.inpaint(image, mask, 3, cv2.INPAINT_TELEA)
                         repaired_rgb = cv2.cvtColor(repaired, cv2.COLOR_BGR2RGB)
-                        st.image(repaired_rgb, use_container_width=True)
+                        st.image(repaired_rgb, use_column_width=True)   # ← changed
                         repaired_pil = Image.fromarray(repaired_rgb)
                         buf = io.BytesIO()
                         repaired_pil.save(buf, format="PNG")
@@ -287,7 +287,7 @@ if st.session_state.image is not None and st.session_state.pil_image is not None
                                         result_img = image.copy()
                                         result_img[y:y+h_box, x:x+w_box] = rep_resized
                                         result_rgb = cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB)
-                                        st.image(result_rgb, use_container_width=True)
+                                        st.image(result_rgb, use_column_width=True)   # ← changed
                                         result_pil = Image.fromarray(result_rgb)
                                         buf = io.BytesIO()
                                         result_pil.save(buf, format="PNG")
