@@ -34,8 +34,12 @@ def auto_straighten(image):
     Attempt to automatically deskew the image by finding the largest quadrilateral.
     Assumes the ID card is the main object.
     """
-    # Safety check: if image is None or too small, return as is.
-    if image is None or image.shape[0] < 10 or image.shape[1] < 10:
+    # Safety checks
+    if image is None:
+        return image
+    if not isinstance(image, np.ndarray):
+        return image
+    if image.shape[0] < 10 or image.shape[1] < 10:
         return image
 
     try:
@@ -47,9 +51,7 @@ def auto_straighten(image):
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return image
-        # Find the largest contour by area
         largest = max(contours, key=cv2.contourArea)
-        # If contour area is too small, skip
         if cv2.contourArea(largest) < 100:
             return image
         epsilon = 0.02 * cv2.arcLength(largest, True)
@@ -57,7 +59,6 @@ def auto_straighten(image):
         if len(approx) != 4:
             return image
         pts = approx.reshape(4, 2)
-        # Order points: top-left, top-right, bottom-right, bottom-left
         rect = np.zeros((4, 2), dtype="float32")
         s = pts.sum(axis=1)
         rect[0] = pts[np.argmin(s)]   # top-left
@@ -144,7 +145,7 @@ with st.sidebar:
     brush_size = st.slider("Brush Size", 1, 30, 10, key="brush_size")
     drawing_mode = st.radio("Drawing Mode", ["Free draw", "Rectangle"], key="drawing_mode")
     repair_mode = st.radio("Repair Method", ["Inpaint", "Replace with Image"], key="repair_mode")
-    auto_straighten = st.checkbox("Auto‑straighten (fix leaning frame)", value=True, key="auto_straighten")
+    auto_straighten_check = st.checkbox("Auto‑straighten (fix leaning frame)", value=True, key="auto_straighten")
     if repair_mode == "Replace with Image":
         replace_image_file = st.file_uploader("Upload replacement image", type=["jpg", "jpeg", "png"], key="replace_image")
     else:
@@ -170,8 +171,8 @@ if uploaded_file is not None:
     if st.session_state.uploaded_file_hash != file_hash:
         image = process_uploaded_file(uploaded_file)
         if image is not None:
-            # Auto‑straighten if enabled
-            if auto_straighten:
+            # Auto‑straighten if enabled (with safety check)
+            if auto_straighten_check and image is not None and isinstance(image, np.ndarray):
                 image = auto_straighten(image)
             st.session_state.image = image
             st.session_state.image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
