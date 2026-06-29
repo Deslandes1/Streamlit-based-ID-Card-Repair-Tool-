@@ -5,6 +5,8 @@ from PIL import Image, ExifTags
 from streamlit_drawable_canvas import st_canvas
 import io
 import hashlib
+import tempfile
+import os
 
 # ------------------------------------------------------------
 # Helper functions
@@ -30,18 +32,9 @@ def correct_image_orientation(image):
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
 def auto_straighten(image):
-    """
-    Attempt to automatically deskew the image by finding the largest quadrilateral.
-    Assumes the ID card is the main object.
-    """
-    # Safety checks
-    if image is None:
+    """Deskew image by finding the largest quadrilateral."""
+    if image is None or not isinstance(image, np.ndarray) or image.shape[0] < 10 or image.shape[1] < 10:
         return image
-    if not isinstance(image, np.ndarray):
-        return image
-    if image.shape[0] < 10 or image.shape[1] < 10:
-        return image
-
     try:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -84,12 +77,10 @@ def auto_straighten(image):
         M = cv2.getPerspectiveTransform(rect, dst)
         warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
         return warped
-    except Exception as e:
-        # If anything fails, return the original image
+    except:
         return image
 
 def process_uploaded_file(uploaded_file):
-    """Read and process uploaded file, correct orientation, and optionally straighten."""
     if uploaded_file is None:
         return None
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
@@ -118,11 +109,11 @@ st.markdown("Upload a damaged ID card, mark the area, and repair or replace.")
 # Session state
 # ------------------------------------------------------------
 if "image" not in st.session_state:
-    st.session_state.image = None
+    st.session_state.image = None                 # BGR
     st.session_state.image_rgb = None
     st.session_state.h = 0
     st.session_state.w = 0
-    st.session_state.pil_image = None
+    st.session_state.temp_path = None             # path to temp file for canvas
     st.session_state.canvas_data = None
     st.session_state.mask = None
     st.session_state.uploaded_file_hash = None
@@ -160,33 +151,55 @@ with st.sidebar:
         st.session_state.mask = None
         st.session_state.uploaded_file_hash = None
         st.session_state.repair_trigger = False
+        # Remove temp file if exists
+        if st.session_state.temp_path and os.path.exists(st.session_state.temp_path):
+            try:
+                os.unlink(st.session_state.temp_path)
+            except:
+                pass
+        st.session_state.temp_path = None
         st.rerun()
 
 # ------------------------------------------------------------
-# Process uploaded image
+# Process uploaded image and save temp file for canvas
 # ------------------------------------------------------------
 if uploaded_file is not None:
     file_bytes = uploaded_file.getvalue()
     file_hash = hashlib.md5(file_bytes).hexdigest()
     if st.session_state.uploaded_file_hash != file_hash:
+        # Process image
         image = process_uploaded_file(uploaded_file)
         if image is not None:
-            # Auto‑straighten if enabled (with safety check)
+            # Auto‑straighten if enabled
             if auto_straighten_check and image is not None and isinstance(image, np.ndarray):
                 image = auto_straighten(image)
             st.session_state.image = image
             st.session_state.image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            st.session_state.h, st.session_state.w, _ = image.shape
+            h, w, _ = image.shape
             # Resize for display
             MAX_DISPLAY_WIDTH = 500
-            if st.session_state.w > MAX_DISPLAY_WIDTH:
-                scale = MAX_DISPLAY_WIDTH / st.session_state.w
-                new_w = int(st.session_state.w * scale)
-                new_h = int(st.session_state.h * scale)
-                st.session_state.image = cv2.resize(st.session_state.image, (new_w, new_h))
-                st.session_state.image_rgb = cv2.cvtColor(st.session_state.image, cv2.COLOR_BGR2RGB)
-                st.session_state.h, st.session_state.w, _ = st.session_state.image.shape
-            st.session_state.pil_image = Image.fromarray(st.session_state.image_rgb).convert('RGB')
+            if w > MAX_DISPLAY_WIDTH:
+                scale = MAX_DISPLAY_WIDTH / w
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                image = cv2.resize(image, (new_w, new_h))
+                st.session_state.image = image
+                st.session_state.image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                h, w, _ = image.shape
+            st.session_state.h, st.session_state.w = h, w
+
+            # Save to a temporary file for the canvas
+            if st.session_state.temp_path and os.path.exists(st.session_state.temp_path):
+                try:
+                    os.unlink(st.session_state.temp_path)
+                except:
+                    pass
+            # Save as PNG
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                st.session_state.temp_path = tmp.name
+                pil_img = Image.fromarray(st.session_state.image_rgb)
+                pil_img.save(tmp.name, format="PNG")
+
             st.session_state.uploaded_file_hash = file_hash
             st.session_state.canvas_data = None
             st.session_state.mask = None
@@ -194,22 +207,29 @@ if uploaded_file is not None:
         else:
             st.error("Invalid image file.")
 else:
-    # Clear stale state if no file
+    # Clear state if no file is uploaded
     if st.session_state.image is not None:
         st.session_state.image = None
         st.session_state.image_rgb = None
-        st.session_state.pil_image = None
+        st.session_state.h = 0
+        st.session_state.w = 0
         st.session_state.canvas_data = None
         st.session_state.mask = None
         st.session_state.uploaded_file_hash = None
         st.session_state.repair_trigger = False
+        if st.session_state.temp_path and os.path.exists(st.session_state.temp_path):
+            try:
+                os.unlink(st.session_state.temp_path)
+            except:
+                pass
+        st.session_state.temp_path = None
 
 # ------------------------------------------------------------
 # Main display and repair
 # ------------------------------------------------------------
-if st.session_state.image is not None:
+if st.session_state.image is not None and st.session_state.temp_path is not None:
     h, w = st.session_state.h, st.session_state.w
-    pil_image = st.session_state.pil_image
+    temp_path = st.session_state.temp_path
 
     draw_mode = "freedraw" if drawing_mode == "Free draw" else "rect"
 
@@ -217,11 +237,12 @@ if st.session_state.image is not None:
 
     with col1:
         st.subheader("✏️ Mark Area")
+        # Use the temp file path as background_image
         canvas_result = st_canvas(
             fill_color="rgba(255, 255, 255, 0)",
             stroke_width=brush_size,
             stroke_color="rgba(255, 0, 0, 0.8)",
-            background_image=pil_image,
+            background_image=temp_path,
             width=w,
             height=h,
             drawing_mode=draw_mode,
