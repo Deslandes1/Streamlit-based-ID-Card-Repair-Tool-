@@ -146,7 +146,6 @@ with st.sidebar:
     if st.button("🔄 Reset All", key="reset_all"):
         st.session_state.image = None
         st.session_state.image_rgb = None
-        st.session_state.pil_image = None
         st.session_state.canvas_data = None
         st.session_state.mask = None
         st.session_state.uploaded_file_hash = None
@@ -237,14 +236,12 @@ if st.session_state.image is not None and st.session_state.temp_path is not None
 
     with col1:
         st.subheader("✏️ Mark Area")
-        # Use the temp file path as background_image
+        # Use the temp file path; do NOT pass height/width – library auto‑detects
         canvas_result = st_canvas(
             fill_color="rgba(255, 255, 255, 0)",
             stroke_width=brush_size,
             stroke_color="rgba(255, 0, 0, 0.8)",
             background_image=temp_path,
-            width=w,
-            height=h,
             drawing_mode=draw_mode,
             update_streamlit=True,
             key="repair_canvas",
@@ -262,6 +259,7 @@ if st.session_state.image is not None and st.session_state.temp_path is not None
         # Extract mask
         mask_data = st.session_state.canvas_data[:, :, 3].astype(np.uint8)
         mask = (mask_data > 0).astype(np.uint8) * 255
+        # Ensure mask matches image size
         if mask.shape[:2] != (h, w):
             mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
         st.session_state.mask = mask
