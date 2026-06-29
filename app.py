@@ -6,7 +6,9 @@ from streamlit_drawable_canvas import st_canvas
 import io
 import hashlib
 
-# ---------- Helper functions ----------
+# ------------------------------------------------------------
+# Helper functions
+# ------------------------------------------------------------
 def correct_image_orientation(image):
     """Correct image orientation using EXIF data."""
     pil_img = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
@@ -27,22 +29,29 @@ def correct_image_orientation(image):
         pass
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-def detect_and_straighten_card(image):
-    """Detect the card's edges and apply perspective transform to straighten it."""
+def auto_straighten(image):
+    """
+    Attempt to automatically deskew the image by finding the largest quadrilateral.
+    Assumes the ID card is the main object.
+    """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    # Apply blur and edge detection
+    # Blur to reduce noise
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edged = cv2.Canny(blurred, 50, 150)
+    # Edge detection
+    edges = cv2.Canny(blurred, 50, 150)
+    # Dilate to close gaps
+    kernel = np.ones((5,5), np.uint8)
+    edges = cv2.dilate(edges, kernel, iterations=1)
     # Find contours
-    contours, _ = cv2.findContours(edged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        return image  # no contours found
-    # Get largest contour (assuming it's the card)
-    cnt = max(contours, key=cv2.contourArea)
+        return image
+    # Find the largest contour (by area)
+    largest = max(contours, key=cv2.contourArea)
     # Approximate polygon
-    peri = cv2.arcLength(cnt, True)
-    approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
-    # If we have 4 points, we can straighten
+    epsilon = 0.02 * cv2.arcLength(largest, True)
+    approx = cv2.approxPolyDP(largest, epsilon, True)
+    # If we have 4 points, we can warp
     if len(approx) == 4:
         pts = approx.reshape(4, 2)
         # Order points: top-left, top-right, bottom-right, bottom-left
@@ -61,6 +70,7 @@ def detect_and_straighten_card(image):
         heightA = np.linalg.norm(tr - br)
         heightB = np.linalg.norm(tl - bl)
         maxHeight = max(int(heightA), int(heightB))
+        # Destination points
         dst = np.array([
             [0, 0],
             [maxWidth - 1, 0],
@@ -71,9 +81,10 @@ def detect_and_straighten_card(image):
         warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
         return warped
     else:
-        return image  # could not find 4 corners
+        return image
 
-def read_uploaded_file(uploaded_file):
+def process_uploaded_file(uploaded_file):
+    """Read and process uploaded file, correct orientation, and optionally straighten."""
     if uploaded_file is None:
         return None
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
@@ -83,7 +94,9 @@ def read_uploaded_file(uploaded_file):
     image = correct_image_orientation(image)
     return image
 
-# ---------- Page config ----------
+# ------------------------------------------------------------
+# Page config and styling
+# ------------------------------------------------------------
 st.set_page_config(page_title="ID Card Repair Tool", page_icon="🪪", layout="wide")
 st.markdown("""
 <style>
@@ -96,10 +109,11 @@ st.markdown("""
 st.title("🪪 ID Card Repair Tool")
 st.markdown("Upload a damaged ID card, mark the area, and repair or replace.")
 
-# ---------- Session state ----------
-if "processed" not in st.session_state:
-    st.session_state.processed = None          # final processed image (BGR) – after straighten
-    st.session_state.original = None           # original image after orientation (BGR)
+# ------------------------------------------------------------
+# Session state
+# ------------------------------------------------------------
+if "image" not in st.session_state:
+    st.session_state.image = None               # BGR
     st.session_state.image_rgb = None
     st.session_state.h = 0
     st.session_state.w = 0
@@ -107,79 +121,94 @@ if "processed" not in st.session_state:
     st.session_state.canvas_data = None
     st.session_state.mask = None
     st.session_state.uploaded_file_hash = None
-    st.session_state.repaired = None           # store repaired image for display
+    st.session_state.repair_trigger = False
 
-# ---------- Sidebar ----------
+# ------------------------------------------------------------
+# Sidebar widgets (with explicit keys)
+# ------------------------------------------------------------
 with st.sidebar:
     st.header("📋 Instructions")
     st.markdown("""
-    1. **Upload** your ID card.
-    2. Optionally enable **Straighten Card** to fix leaning.
-    3. Choose a **drawing mode** (Free draw or Rectangle).
-    4. If using *Replace*, upload a replacement image.
-    5. Draw on the card.
-    6. Click **Repair**.
-    7. **Download** the result.
+    1. **Upload** your ID card (auto‑rotated & auto‑straightened).
+    2. Choose **Drawing Mode**:
+       - *Free draw* – paint over damaged areas.
+       - *Rectangle* – draw a rectangle for replacement.
+    3. Choose **Repair Method**.
+    4. Click **Repair**.
+    5. **Download** the result.
     """)
-    uploaded_file = st.file_uploader("Upload ID card", type=["jpg", "jpeg", "png"])
-    straighten = st.checkbox("🔄 Straighten Card (fix leaning)", value=True)
-    brush_size = st.slider("Brush Size", 1, 30, 10)
-    drawing_mode = st.radio("Drawing Mode", ["Free draw", "Rectangle"])
-    repair_mode = st.radio("Repair Method", ["Inpaint", "Replace with Image"])
-    replace_image_file = None
+    brush_size = st.slider("Brush Size", 1, 30, 10, key="brush_size")
+    drawing_mode = st.radio("Drawing Mode", ["Free draw", "Rectangle"], key="drawing_mode")
+    repair_mode = st.radio("Repair Method", ["Inpaint", "Replace with Image"], key="repair_mode")
+    auto_straighten = st.checkbox("Auto‑straighten (fix leaning frame)", value=True, key="auto_straighten")
     if repair_mode == "Replace with Image":
-        replace_image_file = st.file_uploader("Upload replacement image", type=["jpg", "jpeg", "png"])
-    if st.button("🔄 Reset All"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
+        replace_image_file = st.file_uploader("Upload replacement image", type=["jpg", "jpeg", "png"], key="replace_image")
+    else:
+        replace_image_file = None
+    uploaded_file = st.file_uploader("Upload ID card", type=["jpg", "jpeg", "png"], key="upload_id")
+
+    if st.button("🔄 Reset All", key="reset_all"):
+        st.session_state.image = None
+        st.session_state.image_rgb = None
+        st.session_state.pil_image = None
+        st.session_state.canvas_data = None
+        st.session_state.mask = None
+        st.session_state.uploaded_file_hash = None
+        st.session_state.repair_trigger = False
         st.rerun()
 
-# ---------- Process uploaded file ----------
+# ------------------------------------------------------------
+# Process uploaded image
+# ------------------------------------------------------------
 if uploaded_file is not None:
-    # Check if new file
     file_bytes = uploaded_file.getvalue()
     file_hash = hashlib.md5(file_bytes).hexdigest()
     if st.session_state.uploaded_file_hash != file_hash:
-        # Read image
-        img = read_uploaded_file(uploaded_file)
-        if img is not None:
-            st.session_state.original = img
-            # Straighten if enabled
-            if straighten:
-                img = detect_and_straighten_card(img)
-            st.session_state.processed = img
-            st.session_state.image_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            st.session_state.h, st.session_state.w, _ = img.shape
-            # Resize for display if needed
-            MAX_DISPLAY = 500
-            if st.session_state.w > MAX_DISPLAY:
-                scale = MAX_DISPLAY / st.session_state.w
+        image = process_uploaded_file(uploaded_file)
+        if image is not None:
+            # Auto‑straighten if enabled
+            if auto_straighten:
+                image = auto_straighten(image)
+            st.session_state.image = image
+            st.session_state.image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            st.session_state.h, st.session_state.w, _ = image.shape
+            # Resize for display (max width 500)
+            MAX_DISPLAY_WIDTH = 500
+            if st.session_state.w > MAX_DISPLAY_WIDTH:
+                scale = MAX_DISPLAY_WIDTH / st.session_state.w
                 new_w = int(st.session_state.w * scale)
                 new_h = int(st.session_state.h * scale)
-                st.session_state.processed = cv2.resize(st.session_state.processed, (new_w, new_h))
-                st.session_state.image_rgb = cv2.cvtColor(st.session_state.processed, cv2.COLOR_BGR2RGB)
-                st.session_state.h, st.session_state.w, _ = st.session_state.processed.shape
+                st.session_state.image = cv2.resize(st.session_state.image, (new_w, new_h))
+                st.session_state.image_rgb = cv2.cvtColor(st.session_state.image, cv2.COLOR_BGR2RGB)
+                st.session_state.h, st.session_state.w, _ = st.session_state.image.shape
             st.session_state.pil_image = Image.fromarray(st.session_state.image_rgb).convert('RGB')
             st.session_state.uploaded_file_hash = file_hash
             st.session_state.canvas_data = None
             st.session_state.mask = None
-            st.session_state.repaired = None
+            st.session_state.repair_trigger = False
         else:
             st.error("Invalid image file.")
 else:
-    # Clear session if no file (optional)
-    if st.session_state.uploaded_file_hash is not None:
-        for key in ['original', 'processed', 'image_rgb', 'pil_image', 'canvas_data', 'mask', 'repaired']:
-            if key in st.session_state:
-                st.session_state[key] = None
+    # Clear stale state if no file
+    if st.session_state.image is not None:
+        st.session_state.image = None
+        st.session_state.image_rgb = None
+        st.session_state.pil_image = None
+        st.session_state.canvas_data = None
+        st.session_state.mask = None
         st.session_state.uploaded_file_hash = None
-        st.session_state.h = st.session_state.w = 0
+        st.session_state.repair_trigger = False
 
-# ---------- Main display ----------
-if st.session_state.processed is not None and st.session_state.pil_image is not None:
+# ------------------------------------------------------------
+# Main display and repair
+# ------------------------------------------------------------
+if st.session_state.image is not None:
     h, w = st.session_state.h, st.session_state.w
-    col1, col2 = st.columns(2)
+    pil_image = st.session_state.pil_image
+
     draw_mode = "freedraw" if drawing_mode == "Free draw" else "rect"
+
+    col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("✏️ Mark Area")
@@ -187,55 +216,64 @@ if st.session_state.processed is not None and st.session_state.pil_image is not 
             fill_color="rgba(255, 255, 255, 0)",
             stroke_width=brush_size,
             stroke_color="rgba(255, 0, 0, 0.8)",
-            background_image=st.session_state.pil_image,
+            background_image=pil_image,
             width=w,
             height=h,
             drawing_mode=draw_mode,
             update_streamlit=True,
-            key="canvas",
+            key="repair_canvas",
         )
+
+        # Store canvas data in session state
         if canvas_result is not None and canvas_result.image_data is not None:
             st.session_state.canvas_data = canvas_result.image_data.copy()
 
-    if st.button("🛠️ Repair", type="primary"):
-        if st.session_state.canvas_data is None:
-            st.warning("Please draw on the image first.")
-        else:
-            # Extract mask
-            mask_data = st.session_state.canvas_data[:, :, 3].astype(np.uint8)
-            mask = (mask_data > 0).astype(np.uint8) * 255
-            if mask.shape[:2] != (h, w):
-                mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
-            st.session_state.mask = mask
+    # Repair button
+    if st.button("🛠️ Repair", key="repair_btn", type="primary"):
+        st.session_state.repair_trigger = True
 
-            if np.sum(mask) == 0:
-                st.warning("No area marked. Please draw.")
-            else:
-                image = st.session_state.processed
+    # Process repair only when triggered
+    if st.session_state.repair_trigger and st.session_state.canvas_data is not None:
+        # Extract mask
+        mask_data = st.session_state.canvas_data[:, :, 3].astype(np.uint8)
+        mask = (mask_data > 0).astype(np.uint8) * 255
+        if mask.shape[:2] != (h, w):
+            mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+        st.session_state.mask = mask
+
+        if np.sum(mask) == 0:
+            st.warning("No area marked. Please draw.")
+            st.session_state.repair_trigger = False
+        else:
+            with col2:
+                st.subheader("✅ Result")
+                image = st.session_state.image
                 if repair_mode == "Inpaint":
                     try:
                         repaired = cv2.inpaint(image, mask, 3, cv2.INPAINT_TELEA)
-                        st.session_state.repaired = repaired
+                        repaired_rgb = cv2.cvtColor(repaired, cv2.COLOR_BGR2RGB)
+                        st.image(repaired_rgb, use_container_width=True)
+                        repaired_pil = Image.fromarray(repaired_rgb)
+                        buf = io.BytesIO()
+                        repaired_pil.save(buf, format="PNG")
+                        st.download_button("📥 Download Repaired", data=buf.getvalue(),
+                                           file_name="repaired.png", mime="image/png", key="dl_repair")
                     except Exception as e:
                         st.error(f"Inpainting failed: {e}")
-                        st.session_state.repaired = None
-                else:  # Replace
+                else:  # Replace with Image
                     if replace_image_file is None:
                         st.warning("Please upload a replacement image.")
-                        st.session_state.repaired = None
                     else:
                         try:
                             rep_bytes = np.asarray(bytearray(replace_image_file.read()), dtype=np.uint8)
                             rep_img = cv2.imdecode(rep_bytes, cv2.IMREAD_COLOR)
                             if rep_img is None:
                                 st.error("Invalid replacement image.")
-                                st.session_state.repaired = None
                             else:
                                 rep_img = correct_image_orientation(rep_img)
                                 coords = cv2.findNonZero(mask)
                                 if coords is None:
                                     st.warning("Mask is empty. Draw a rectangle.")
-                                    st.session_state.repaired = None
                                 else:
                                     x, y, w_box, h_box = cv2.boundingRect(coords)
                                     x, y = max(0, x), max(0, y)
@@ -243,28 +281,24 @@ if st.session_state.processed is not None and st.session_state.pil_image is not 
                                     h_box = min(h_box, h - y)
                                     if w_box <= 0 or h_box <= 0:
                                         st.warning("Drawn area too small or at edge.")
-                                        st.session_state.repaired = None
                                     else:
                                         rep_resized = cv2.resize(rep_img, (w_box, h_box))
                                         result_img = image.copy()
                                         result_img[y:y+h_box, x:x+w_box] = rep_resized
-                                        st.session_state.repaired = result_img
+                                        result_rgb = cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB)
+                                        st.image(result_rgb, use_container_width=True)
+                                        result_pil = Image.fromarray(result_rgb)
+                                        buf = io.BytesIO()
+                                        result_pil.save(buf, format="PNG")
+                                        st.download_button("📥 Download Replaced", data=buf.getvalue(),
+                                                           file_name="replaced.png", mime="image/png", key="dl_replace")
                         except Exception as e:
                             st.error(f"Replacement failed: {e}")
-                            st.session_state.repaired = None
-
-    # Display result in col2 if exists
-    with col2:
-        st.subheader("✅ Result")
-        if st.session_state.repaired is not None:
-            repaired_rgb = cv2.cvtColor(st.session_state.repaired, cv2.COLOR_BGR2RGB)
-            st.image(repaired_rgb, use_column_width=True)
-            repaired_pil = Image.fromarray(repaired_rgb)
-            buf = io.BytesIO()
-            repaired_pil.save(buf, format="PNG")
-            st.download_button("📥 Download", data=buf.getvalue(), file_name="repaired.png", mime="image/png")
-        else:
-            st.info("Click 'Repair' to see the result.")
+                # Reset trigger so the repair runs only once per click
+                st.session_state.repair_trigger = False
+    elif st.session_state.repair_trigger and st.session_state.canvas_data is None:
+        st.warning("Please draw on the image first.")
+        st.session_state.repair_trigger = False
 
 else:
     st.info("👈 Upload an ID card image to begin.")
