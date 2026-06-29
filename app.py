@@ -6,15 +6,9 @@ from streamlit_drawable_canvas import st_canvas
 import io
 
 def correct_image_orientation(image):
-    """
-    Corrects image orientation based on EXIF data.
-    image: numpy array (BGR) from OpenCV.
-    Returns: correctly oriented numpy array (BGR).
-    """
-    # Convert to PIL for EXIF handling
+    """Correct image orientation using EXIF data."""
     pil_img = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
     try:
-        # Get EXIF orientation
         exif = pil_img._getexif()
         if exif is not None:
             for tag, value in exif.items():
@@ -23,19 +17,27 @@ def correct_image_orientation(image):
                     if orientation == 3:
                         pil_img = pil_img.rotate(180, expand=True)
                     elif orientation == 6:
-                        pil_img = pil_img.rotate(270, expand=True)  # 270° clockwise (or 90° counter‑clockwise)
+                        pil_img = pil_img.rotate(270, expand=True)
                     elif orientation == 8:
                         pil_img = pil_img.rotate(90, expand=True)
                     break
-    except Exception as e:
-        # If EXIF reading fails, just return original
+    except:
         pass
-    # Convert back to BGR for OpenCV
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+def process_uploaded_file(uploaded_file):
+    """Read and process uploaded file once, store in session state."""
+    if uploaded_file is None:
+        return None
+    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    if image is None:
+        return None
+    image = correct_image_orientation(image)
+    return image
 
 # Page config
 st.set_page_config(page_title="ID Card Repair Tool", page_icon="🪪", layout="wide")
-
 st.markdown("""
 <style>
     .stApp { background-color: #e6f0fa; }
@@ -47,23 +49,28 @@ st.markdown("""
 st.title("🪪 ID Card Repair Tool")
 st.markdown("Upload a damaged ID card, mark the area, and repair or replace.")
 
-# Session state for canvas persistence
-if "canvas_data" not in st.session_state:
+# Initialize session state
+if "image" not in st.session_state:
+    st.session_state.image = None          # processed image (BGR)
+    st.session_state.image_rgb = None      # RGB version for display
+    st.session_state.h = 0
+    st.session_state.w = 0
+    st.session_state.pil_image = None
     st.session_state.canvas_data = None
-if "mask" not in st.session_state:
     st.session_state.mask = None
+    st.session_state.uploaded_file_hash = None
 
 # Sidebar
 with st.sidebar:
     st.header("📋 Instructions")
     st.markdown("""
-    1. **Upload** your ID card.
+    1. **Upload** your ID card (auto‑rotated).
     2. Choose a **drawing mode**:
        - *Free draw* – paint over damaged areas (for inpainting).
        - *Rectangle* – draw a rectangle where you want the replacement image.
-    3. If using *Rectangle*, upload the replacement image.
+    3. If using *Replace*, upload a replacement image.
     4. Click **Repair**.
-    5. Download the result.
+    5. **Download** the result.
     """)
     brush_size = st.slider("Brush Size", 1, 30, 10)
     drawing_mode = st.radio("Drawing Mode", ["Free draw", "Rectangle"])
@@ -74,38 +81,64 @@ with st.sidebar:
         replace_image_file = None
     uploaded_file = st.file_uploader("Upload ID card", type=["jpg", "jpeg", "png"])
 
-# Main area
+    if st.button("🔄 Reset All"):
+        st.session_state.image = None
+        st.session_state.canvas_data = None
+        st.session_state.mask = None
+        st.session_state.uploaded_file_hash = None
+        st.rerun()
+
+# --- Main logic ---
+# Check if a new file is uploaded and different from previous
 if uploaded_file is not None:
-    # Read image
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    if image is None:
-        st.error("Invalid image.")
-        st.stop()
-    # Correct orientation
-    image = correct_image_orientation(image)
+    # Compute a hash of the file content to detect changes
+    file_bytes = uploaded_file.getvalue()
+    import hashlib
+    file_hash = hashlib.md5(file_bytes).hexdigest()
+    if st.session_state.uploaded_file_hash != file_hash:
+        # Process the new file
+        image = process_uploaded_file(uploaded_file)
+        if image is not None:
+            st.session_state.image = image
+            st.session_state.image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            st.session_state.h, st.session_state.w, _ = image.shape
+            # Resize if too wide
+            MAX_DISPLAY_WIDTH = 500
+            if st.session_state.w > MAX_DISPLAY_WIDTH:
+                scale = MAX_DISPLAY_WIDTH / st.session_state.w
+                new_w = int(st.session_state.w * scale)
+                new_h = int(st.session_state.h * scale)
+                st.session_state.image = cv2.resize(st.session_state.image, (new_w, new_h))
+                st.session_state.image_rgb = cv2.cvtColor(st.session_state.image, cv2.COLOR_BGR2RGB)
+                st.session_state.h, st.session_state.w, _ = st.session_state.image.shape
+            st.session_state.pil_image = Image.fromarray(st.session_state.image_rgb).convert('RGB')
+            st.session_state.uploaded_file_hash = file_hash
+            # Clear old canvas data
+            st.session_state.canvas_data = None
+            st.session_state.mask = None
+        else:
+            st.error("Invalid image file.")
+else:
+    # If no file, clear session to avoid stale state (optional)
+    if st.session_state.image is not None:
+        st.session_state.image = None
+        st.session_state.image_rgb = None
+        st.session_state.pil_image = None
+        st.session_state.canvas_data = None
+        st.session_state.mask = None
+        st.session_state.uploaded_file_hash = None
 
-    # Convert to RGB for display
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    h, w, _ = image.shape
+# --- Display if we have an image ---
+if st.session_state.image is not None:
+    h, w = st.session_state.h, st.session_state.w
+    pil_image = st.session_state.pil_image
 
-    # Resize to fit column
-    MAX_DISPLAY_WIDTH = 500
-    if w > MAX_DISPLAY_WIDTH:
-        scale = MAX_DISPLAY_WIDTH / w
-        new_w, new_h = int(w * scale), int(h * scale)
-        image = cv2.resize(image, (new_w, new_h))
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        h, w, _ = image.shape
-
-    pil_image = Image.fromarray(image_rgb).convert('RGB')
-
-    # Canvas drawing mode
     draw_mode = "freedraw" if drawing_mode == "Free draw" else "rect"
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("✏️ Mark Area")
+        # Use the cached image and canvas
         canvas_result = st_canvas(
             fill_color="rgba(255, 255, 255, 0)",
             stroke_width=brush_size,
@@ -114,19 +147,20 @@ if uploaded_file is not None:
             width=w,
             height=h,
             drawing_mode=draw_mode,
-            update_streamlit=True,
+            update_streamlit=True,   # still real-time, but we store in session
             key="canvas",
         )
 
+        # Store canvas result in session state
         if canvas_result is not None and canvas_result.image_data is not None:
             st.session_state.canvas_data = canvas_result.image_data.copy()
-        else:
-            st.session_state.canvas_data = None
+        # else keep previous
 
     if st.button("🛠️ Repair", type="primary"):
         if st.session_state.canvas_data is None:
             st.warning("Please draw on the image first.")
         else:
+            # Extract mask from the stored canvas data
             mask_data = st.session_state.canvas_data[:, :, 3].astype(np.uint8)
             mask = (mask_data > 0).astype(np.uint8) * 255
             if mask.shape[:2] != (h, w):
@@ -138,6 +172,7 @@ if uploaded_file is not None:
             else:
                 with col2:
                     st.subheader("✅ Result")
+                    image = st.session_state.image  # use the stored image
                     if repair_mode == "Inpaint":
                         try:
                             repaired = cv2.inpaint(image, mask, 3, cv2.INPAINT_TELEA)
@@ -154,12 +189,12 @@ if uploaded_file is not None:
                             st.warning("Please upload a replacement image.")
                         else:
                             try:
+                                # Read and orient replacement image
                                 rep_bytes = np.asarray(bytearray(replace_image_file.read()), dtype=np.uint8)
                                 rep_img = cv2.imdecode(rep_bytes, cv2.IMREAD_COLOR)
                                 if rep_img is None:
                                     st.error("Invalid replacement image.")
                                 else:
-                                    # Also correct orientation of replacement image
                                     rep_img = correct_image_orientation(rep_img)
                                     coords = cv2.findNonZero(mask)
                                     if coords is None:
