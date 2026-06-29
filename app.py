@@ -34,25 +34,28 @@ def auto_straighten(image):
     Attempt to automatically deskew the image by finding the largest quadrilateral.
     Assumes the ID card is the main object.
     """
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    # Blur to reduce noise
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    # Edge detection
-    edges = cv2.Canny(blurred, 50, 150)
-    # Dilate to close gaps
-    kernel = np.ones((5,5), np.uint8)
-    edges = cv2.dilate(edges, kernel, iterations=1)
-    # Find contours
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
+    # Safety check: if image is None or too small, return as is.
+    if image is None or image.shape[0] < 10 or image.shape[1] < 10:
         return image
-    # Find the largest contour (by area)
-    largest = max(contours, key=cv2.contourArea)
-    # Approximate polygon
-    epsilon = 0.02 * cv2.arcLength(largest, True)
-    approx = cv2.approxPolyDP(largest, epsilon, True)
-    # If we have 4 points, we can warp
-    if len(approx) == 4:
+
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 50, 150)
+        kernel = np.ones((5,5), np.uint8)
+        edges = cv2.dilate(edges, kernel, iterations=1)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return image
+        # Find the largest contour by area
+        largest = max(contours, key=cv2.contourArea)
+        # If contour area is too small, skip
+        if cv2.contourArea(largest) < 100:
+            return image
+        epsilon = 0.02 * cv2.arcLength(largest, True)
+        approx = cv2.approxPolyDP(largest, epsilon, True)
+        if len(approx) != 4:
+            return image
         pts = approx.reshape(4, 2)
         # Order points: top-left, top-right, bottom-right, bottom-left
         rect = np.zeros((4, 2), dtype="float32")
@@ -62,7 +65,6 @@ def auto_straighten(image):
         diff = np.diff(pts, axis=1)
         rect[1] = pts[np.argmin(diff)] # top-right
         rect[3] = pts[np.argmax(diff)] # bottom-left
-        # Compute width and height of the new image
         (tl, tr, br, bl) = rect
         widthA = np.linalg.norm(br - bl)
         widthB = np.linalg.norm(tr - tl)
@@ -70,7 +72,8 @@ def auto_straighten(image):
         heightA = np.linalg.norm(tr - br)
         heightB = np.linalg.norm(tl - bl)
         maxHeight = max(int(heightA), int(heightB))
-        # Destination points
+        if maxWidth < 10 or maxHeight < 10:
+            return image
         dst = np.array([
             [0, 0],
             [maxWidth - 1, 0],
@@ -80,7 +83,8 @@ def auto_straighten(image):
         M = cv2.getPerspectiveTransform(rect, dst)
         warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
         return warped
-    else:
+    except Exception as e:
+        # If anything fails, return the original image
         return image
 
 def process_uploaded_file(uploaded_file):
@@ -113,7 +117,7 @@ st.markdown("Upload a damaged ID card, mark the area, and repair or replace.")
 # Session state
 # ------------------------------------------------------------
 if "image" not in st.session_state:
-    st.session_state.image = None               # BGR
+    st.session_state.image = None
     st.session_state.image_rgb = None
     st.session_state.h = 0
     st.session_state.w = 0
@@ -124,7 +128,7 @@ if "image" not in st.session_state:
     st.session_state.repair_trigger = False
 
 # ------------------------------------------------------------
-# Sidebar widgets (with explicit keys)
+# Sidebar widgets
 # ------------------------------------------------------------
 with st.sidebar:
     st.header("📋 Instructions")
@@ -172,7 +176,7 @@ if uploaded_file is not None:
             st.session_state.image = image
             st.session_state.image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             st.session_state.h, st.session_state.w, _ = image.shape
-            # Resize for display (max width 500)
+            # Resize for display
             MAX_DISPLAY_WIDTH = 500
             if st.session_state.w > MAX_DISPLAY_WIDTH:
                 scale = MAX_DISPLAY_WIDTH / st.session_state.w
@@ -224,7 +228,6 @@ if st.session_state.image is not None:
             key="repair_canvas",
         )
 
-        # Store canvas data in session state
         if canvas_result is not None and canvas_result.image_data is not None:
             st.session_state.canvas_data = canvas_result.image_data.copy()
 
